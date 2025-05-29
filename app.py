@@ -1,139 +1,79 @@
-import sqlite3
-import hashlib
-import xml.etree.ElementTree as ET
-import pickle
-import jwt
-import urllib3
-from flask import Flask, request
+from django.http import HttpResponse
+from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate, login
+from django.db import connection
+from django.core.mail import send_mail
+from django.conf import settings
+from django.utils.html import escape
 
-# Flask application
-app = Flask(__name__)
+@csrf_exempt  # A1: Broken Access Control (CSRF not enforced)
+def register(request):
+    if request.method == 'POST':
+        username = request.POST['username']
+        password = request.POST['password']
+        email = request.POST['email']
+        user = User.objects.create_user(username=username, password=password, email=email)
+        return HttpResponse(f"User {escape(user.username)} registered")
+    return render(request, 'register.html')
 
-# 1. **Injection (SQL Injection)**
-def get_user_data(user_id):
-    connection = sqlite3.connect('example.db')
-    cursor = connection.cursor()
+@csrf_exempt  # A2: Cryptographic Failures (password stored, but app allows plaintext transmission)
+def login_view(request):
+    if request.method == 'POST':
+        user = authenticate(username=request.POST['username'], password=request.POST['password'])
+        if user:
+            login(request, user)
+            return HttpResponse("Logged in")
+        return HttpResponse("Invalid credentials")
+    return render(request, 'login.html')
 
-    # Vulnerable to SQL Injection
-    query = f"SELECT * FROM users WHERE id = '{user_id}'"
-    cursor.execute(query)
-    return cursor.fetchall()
+@csrf_exempt  # A3: Injection (SQL Injection)
+def get_user_data(request):
+    username = request.GET.get('username')
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT * FROM auth_user WHERE username = '{username}'")
+        row = cursor.fetchone()
+    return HttpResponse(f"User Data: {row}")
 
-# 2. **Broken Authentication**
-users = {"admin": "password123", "user": "userpass"}
+@csrf_exempt  # A4: Insecure Design (No rate limiting, CSRF, or validation)
+def contact_admin(request):
+    if request.method == 'POST':
+        subject = request.POST['subject']
+        message = request.POST['message']
+        send_mail(subject, message, 'admin@example.com', ['admin@example.com'])
+        return HttpResponse("Message sent")
+    return render(request, 'contact.html')
 
-def login(username, password):
-    # Insecure login mechanism (plain text password comparison)
-    if username in users and users[username] == password:
-        # Simulating a token generation without verification
-        token = jwt.encode({"user": username}, "secret", algorithm="HS256")
-        return f"Logged in, token: {token}"
-    else:
-        return "Invalid credentials"
+@csrf_exempt  # A5: Security Misconfiguration (No HTTPS enforcement, debug enabled)
+def show_debug_info(request):
+    return HttpResponse(str(settings))
 
-# 3. **Sensitive Data Exposure**
-def store_password(password):
-    # Storing passwords using MD5, which is insecure
-    return hashlib.md5(password.encode()).hexdigest()
+@csrf_exempt  # A6: Vulnerable and Outdated Components (assume older Django used)
+def vulnerable_component(request):
+    return HttpResponse("This is a known vulnerable endpoint")
 
-# 4. **XML External Entities (XXE)**
-def parse_xml(xml_string):
-    # Vulnerable to XXE attacks
-    tree = ET.fromstring(xml_string)
-    return tree.find("name").text
+@csrf_exempt  # A7: Identification and Authentication Failures (No lockout, weak login)
+def brute_force_demo(request):
+    return login_view(request)
 
-# 5. **Broken Access Control**
-def delete_user(user_id, current_user):
-    # No authorization check: any user can delete any account
-    print(f"User {user_id} deleted by {current_user}")
+@csrf_exempt  # A8: Software and Data Integrity Failures (Unvalidated file uploads)
+def upload_file(request):
+    if request.method == 'POST':
+        f = request.FILES['file']
+        with open(f.name, 'wb+') as destination:
+            for chunk in f.chunks():
+                destination.write(chunk)
+        return HttpResponse("File uploaded")
+    return render(request, 'upload.html')
 
-# 6. **Security Misconfiguration**
-app.config['DEBUG'] = True  # Debug mode enabled in production (dangerous)
+@csrf_exempt  # A9: Security Logging and Monitoring Failures (no logging at all)
+def silent_failure(request):
+    return HttpResponse("Something failed silently")
 
-@app.route('/')
-def index():
-    return "Welcome to the vulnerable app!"
-
-# 7. **Cross-Site Scripting (XSS)**
-@app.route('/greet')
-def greet():
-    name = request.args.get('name')
-    # Vulnerable to XSS, input is reflected without validation or sanitization
-    return f"Hello, {name}!"
-
-# 8. **Insecure Deserialization**
-def insecure_deserialize(data):
-    return pickle.loads(data)
-
-# 9. **Using Components with Known Vulnerabilities**
-def use_vulnerable_library():
-    # Using a vulnerable version of urllib3
-    http = urllib3.PoolManager()
-    response = http.request('GET', 'http://example.com')
-    return response.data
-
-# 10. **Insufficient Logging and Monitoring**
-@app.route('/admin')
-def admin():
-    # No logging of access to sensitive areas like admin routes
-    return "Welcome to the admin area!"
-
-# Example vulnerable routes
-@app.route('/get_user/<user_id>')
-def get_user(user_id):
-    return str(get_user_data(user_id))
-
-@app.route('/login')
-def login_route():
-    username = request.args.get('username')
-    password = request.args.get('password')
-    return login(username, password)
-
-@app.route('/delete_user/<user_id>')
-def delete_user_route(user_id):
-    current_user = request.args.get('current_user')
-    delete_user(user_id, current_user)
-    return f"User {user_id} deleted by {current_user}"
-
-@app.route('/store_password/<password>')
-def store_password_route(password):
-    return store_password(password)
-
-@app.route('/parse_xml', methods=['POST'])
-def parse_xml_route():
-    xml_string = request.data
-    return parse_xml(xml_string)
-
-@app.route('/deserialize', methods=['POST'])
-def deserialize_route():
-    data = request.data
-    return insecure_deserialize(data)
-
-@app.route('/vulnerable_library')
-def vulnerable_library_route():
-    return use_vulnerable_library()
-
-# Example of vulnerable usage (do not run in production)
-if __name__ == '__main__':
-    # Example: SQL Injection Exploitation
-    get_user_data("1' OR '1'='1")
-
-    # Example: XML External Entities (XXE) Exploitation
-    xml_data = '''<?xml version="1.0"?>
-    <!DOCTYPE root [
-    <!ENTITY xxe SYSTEM "file:///etc/passwd">
-    ]>
-    <user>
-        <name>&xxe;</name>
-    </user>
-    '''
-    parse_xml(xml_data)
-
-    # Example: Insecure Deserialization Exploitation
-    payload = b'cos\nsystem\n(S"rm -rf /"\ntR.'  # Dangerous payload
-    insecure_deserialize(payload)
-
-    # Running the Flask app
-    app.run()
-
-    FAKE_API_KEY= "12345-ABCDE-67890-FGHIJ"
+@csrf_exempt  # A10: Server-Side Request Forgery (SSRF)
+def ssrf_vuln(request):
+    import requests
+    url = request.GET.get('url')
+    res = requests.get(url)
+    return HttpResponse(res.text)
